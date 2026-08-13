@@ -20,7 +20,7 @@ from models.Xception import Xception
 from pipeline.helpers import write_portable_manifest
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Single-process local CPU/GPU training")
     parser.add_argument("--id", required=True)
     parser.add_argument("--run_name", default="freq")
@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--experiment", required=True)
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def build_model(name: str, image_size: int, device: torch.device) -> nn.Module:
@@ -91,8 +91,9 @@ def make_loader(args: argparse.Namespace, *, validation: bool) -> DataLoader | N
     )
 
 
-def main() -> None:
-    args = parse_args()
+def main(args: argparse.Namespace | None = None) -> dict:
+    if args is None:
+        args = parse_args()
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -282,6 +283,7 @@ def main() -> None:
         result_path = result_dir / f"train-{args.id}.json"
         result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
         mlflow.log_artifact(str(result_path), "pipeline")
+        return result
     finally:
         mlflow.end_run()
 

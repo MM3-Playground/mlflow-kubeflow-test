@@ -79,7 +79,7 @@ def save_cm(y_true, y_pred, save_path):
     plt.savefig(save_path, dpi=300)
 
 
-def parse_args():
+def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description='Evaluation')
 
     parser.add_argument("--id", type=str, help="run id")
@@ -99,11 +99,12 @@ def parse_args():
     parser.add_argument("--workspace", type=str)
     parser.add_argument("--experiment", type=str)
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-if __name__ == '__main__':
-    args = parse_args()
+def main(args: argparse.Namespace | None = None) -> dict:
+    if args is None:
+        args = parse_args()
 
     mlflow.set_workspace(args.workspace)
     mlflow.set_experiment(args.experiment)
@@ -264,3 +265,8 @@ if __name__ == '__main__':
     result_path.write_text(json.dumps(result, indent=2))
     mlflow.log_artifact(str(result_path), "pipeline")
     mlflow.end_run()
+    return result
+
+
+if __name__ == "__main__":
+    main()
