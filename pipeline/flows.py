@@ -60,7 +60,7 @@ def upload_manifest_bundle_pipeline(
 @dsl.container_component
 def train_task(
     code_repo_url: str, code_commit: str, dataset_repo_url: str, dataset_commit: str,
-    manifest_bundle_path: dsl.InputPath(Dataset), pipeline_kind: str, run_name: str,
+    manifest_bundle: dsl.Input[Dataset], pipeline_kind: str, run_name: str,
     seed: int, model: str, image_size: int, batch_size: int, workers: int,
     optimizer: str, learning_rate: float, epochs: int, factor: float, patience: int,
     early_stopping_patience: int, n_c_samples: int, val_n_c_samples: int,
@@ -75,7 +75,7 @@ def train_task(
         args=[
             "train",
             "--dataset-repo-url", dataset_repo_url, "--dataset-commit", dataset_commit,
-            "--manifest-bundle", manifest_bundle_path, "--pipeline-kind", pipeline_kind,
+            "--manifest-bundle", manifest_bundle.path, "--pipeline-kind", pipeline_kind,
             "--run-name", run_name, "--seed", seed, "--model", model,
             "--image-size", image_size, "--batch-size", batch_size, "--workers", workers,
             "--optimizer", optimizer, "--learning-rate", learning_rate, "--epochs", epochs,
@@ -95,7 +95,7 @@ def train_task(
 @dsl.container_component
 def evaluate_task(
     code_repo_url: str, code_commit: str, dataset_repo_url: str, dataset_commit: str,
-    dataset_name: str, manifest_bundle_path: dsl.InputPath(Dataset),
+    dataset_name: str, manifest_bundle: dsl.Input[Dataset],
     parent_mlflow_run_id: str, model_uri: str, pipeline_kind: str, model: str,
     image_size: int, mlflow_workspace: str, mlflow_experiment: str,
     accuracy: dsl.OutputPath(float), mlflow_run_id: dsl.OutputPath(str),
@@ -106,7 +106,7 @@ def evaluate_task(
         args=[
             "evaluate",
             "--dataset-repo-url", dataset_repo_url, "--dataset-commit", dataset_commit,
-            "--dataset-name", dataset_name, "--manifest-bundle", manifest_bundle_path,
+            "--dataset-name", dataset_name, "--manifest-bundle", manifest_bundle.path,
             "--parent-mlflow-run-id", parent_mlflow_run_id, "--model-uri", model_uri,
             "--pipeline-kind", pipeline_kind, "--model", model, "--image-size", image_size,
             "--mlflow-workspace", mlflow_workspace, "--mlflow-experiment", mlflow_experiment,
@@ -196,7 +196,7 @@ def _workflow(
         code_commit=code_commit,
         dataset_repo_url=dataset_repo_url,
         dataset_commit=dataset_commit,
-        manifest_bundle_path=manifests.output,
+        manifest_bundle=manifests.output,
         pipeline_kind=pipeline_kind,
         run_name=run_name,
         seed=seed,
@@ -224,7 +224,7 @@ def _workflow(
         dataset_repo_url=dataset_repo_url,
         dataset_commit=train.outputs["dataset_commit_resolved"],
         dataset_name=train.outputs["dataset_name"],
-        manifest_bundle_path=manifests.output,
+        manifest_bundle=manifests.output,
         parent_mlflow_run_id=train.outputs["mlflow_run_id"],
         model_uri=train.outputs["model_uri"],
         pipeline_kind=pipeline_kind,
