@@ -74,6 +74,8 @@ def train_task(
         command=["/workspace/venv/bin/python", "-m", "pipeline.kubeflow_task"],
         args=[
             "train",
+            "--code-repo-url", code_repo_url,
+            "--code-commit", code_commit,
             "--dataset-repo-url", dataset_repo_url, "--dataset-commit", dataset_commit,
             "--manifest-bundle", manifest_bundle.path, "--pipeline-kind", pipeline_kind,
             "--run-name", run_name, "--seed", seed, "--model", model,
@@ -105,6 +107,8 @@ def evaluate_task(
         command=["/workspace/venv/bin/python", "-m", "pipeline.kubeflow_task"],
         args=[
             "evaluate",
+            "--code-repo-url", code_repo_url,
+            "--code-commit", code_commit,
             "--dataset-repo-url", dataset_repo_url, "--dataset-commit", dataset_commit,
             "--dataset-name", dataset_name, "--manifest-bundle", manifest_bundle.path,
             "--parent-mlflow-run-id", parent_mlflow_run_id, "--model-uri", model_uri,
@@ -116,9 +120,8 @@ def evaluate_task(
 
 
 def _configure_runtime_task(task, code_repo_url, code_commit):
-    # Named bootstrap contract; the admission policy reads these env vars.
-    task.set_env_variable(name="CODE_REPO_URL", value=code_repo_url)
-    task.set_env_variable(name="CODE_COMMIT", value=code_commit)
+    # code_repo_url/code_commit are intentionally carried in the component args.
+    # runtime-bootstrap.yaml reads them from the resolved Pod args.
     task.set_env_variable(name="PYTHONPATH", value="/workspace/code")
 
     # Keep Git credentials as a Kubernetes Secret for now.
