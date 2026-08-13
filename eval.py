@@ -79,7 +79,7 @@ def save_cm(y_true, y_pred, save_path):
     plt.savefig(save_path, dpi=300)
 
 
-def parse_args(argv: list[str] | None = None):
+def parse_args():
     parser = argparse.ArgumentParser(description='Evaluation')
 
     parser.add_argument("--id", type=str, help="run id")
@@ -99,7 +99,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--workspace", type=str)
     parser.add_argument("--experiment", type=str)
 
-    return parser.parse_args(argv)
+    return parser.parse_args()
 
 
 def main(args: argparse.Namespace | None = None) -> dict:
@@ -268,5 +268,5 @@ def main(args: argparse.Namespace | None = None) -> dict:
     return result
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -5,7 +5,7 @@ description = "Minimal Kubeflow conversion of the DataLad training demo"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-  "albumentations>=1.4,<3", "datalad>=1.1,<2", "kfp>=2.17,<3", "kfp-kubernetes>=2.0,<3",
+  "boto3>=1.34,<2",   "albumentations>=1.4,<3", "datalad>=1.1,<2", "kfp>=2.17,<3", "kfp-kubernetes>=2.0,<3",
   "matplotlib>=3.8,<4", "mlflow>=3,<4", "model-registry", "numpy>=1.26,<3",
   "opencv-python-headless>=4.9,<5", "pandas>=2.2,<3", "pillow>=10,<13",
   "scikit-learn>=1.4,<2", "seaborn>=0.13,<1", "tensorboard>=2.16,<3",

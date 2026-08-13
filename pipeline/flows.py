@@ -18,6 +18,14 @@ MLFLOW_TRACKING_URI = _required_env("MLFLOW_TRACKING_URI")
 MLFLOW_TRACKING_USERNAME = _required_env("MLFLOW_TRACKING_USERNAME")
 MLFLOW_TRACKING_PASSWORD = _required_env("MLFLOW_TRACKING_PASSWORD")
 
+# Used only to read the existing manifest bundle URI directly, avoiding dsl.importer/MLMD.
+# These defaults match the current Kubeflow installation and can be overridden locally.
+KFP_S3_ENDPOINT = os.environ.get(
+    "KFP_S3_ENDPOINT", "https://object-arbutus.alliancecan.ca"
+)
+KFP_S3_REGION = os.environ.get("KFP_S3_REGION", "us-east-1")
+KFP_S3_SECRET = os.environ.get("KFP_S3_SECRET", "kfp-s3-credentials")
+
 
 @dsl.component(base_image="python:3.11-slim")
 def write_manifest_bundle(
@@ -60,7 +68,7 @@ def upload_manifest_bundle_pipeline(
 @dsl.container_component
 def train_task(
     code_repo_url: str, code_commit: str, dataset_repo_url: str, dataset_commit: str,
-    manifest_bundle: dsl.Input[Dataset], pipeline_kind: str, run_name: str,
+    manifest_bundle_uri: str, pipeline_kind: str, run_name: str,
     seed: int, model: str, image_size: int, batch_size: int, workers: int,
     optimizer: str, learning_rate: float, epochs: int, factor: float, patience: int,
     early_stopping_patience: int, n_c_samples: int, val_n_c_samples: int,
@@ -77,7 +85,7 @@ def train_task(
             "--code-repo-url", code_repo_url,
             "--code-commit", code_commit,
             "--dataset-repo-url", dataset_repo_url, "--dataset-commit", dataset_commit,
-            "--manifest-bundle", manifest_bundle.path, "--pipeline-kind", pipeline_kind,
+            "--manifest-bundle-uri", manifest_bundle_uri, "--pipeline-kind", pipeline_kind,
             "--run-name", run_name, "--seed", seed, "--model", model,
             "--image-size", image_size, "--batch-size", batch_size, "--workers", workers,
             "--optimizer", optimizer, "--learning-rate", learning_rate, "--epochs", epochs,
@@ -97,7 +105,7 @@ def train_task(
 @dsl.container_component
 def evaluate_task(
     code_repo_url: str, code_commit: str, dataset_repo_url: str, dataset_commit: str,
-    dataset_name: str, manifest_bundle: dsl.Input[Dataset],
+    dataset_name: str, manifest_bundle_uri: str,
     parent_mlflow_run_id: str, model_uri: str, pipeline_kind: str, model: str,
     image_size: int, mlflow_workspace: str, mlflow_experiment: str,
     accuracy: dsl.OutputPath(float), mlflow_run_id: dsl.OutputPath(str),
@@ -110,7 +118,7 @@ def evaluate_task(
             "--code-repo-url", code_repo_url,
             "--code-commit", code_commit,
             "--dataset-repo-url", dataset_repo_url, "--dataset-commit", dataset_commit,
-            "--dataset-name", dataset_name, "--manifest-bundle", manifest_bundle.path,
+            "--dataset-name", dataset_name, "--manifest-bundle-uri", manifest_bundle_uri,
             "--parent-mlflow-run-id", parent_mlflow_run_id, "--model-uri", model_uri,
             "--pipeline-kind", pipeline_kind, "--model", model, "--image-size", image_size,
             "--mlflow-workspace", mlflow_workspace, "--mlflow-experiment", mlflow_experiment,
@@ -123,6 +131,20 @@ def _configure_runtime_task(task, code_repo_url, code_commit):
     # code_repo_url/code_commit are intentionally carried in the component args.
     # runtime-bootstrap.yaml reads them from the resolved Pod args.
     task.set_env_variable(name="PYTHONPATH", value="/workspace/code")
+
+    # Read the manifest bundle directly from the KFP S3 object store.
+    # This removes the dsl.importer task and its MLMD importer execution.
+    kubernetes.use_secret_as_env(
+        task,
+        secret_name=KFP_S3_SECRET,
+        secret_key_to_env={
+            "accesskey": "AWS_ACCESS_KEY_ID",
+            "secretkey": "AWS_SECRET_ACCESS_KEY",
+        },
+    )
+    task.set_env_variable(name="AWS_ENDPOINT_URL", value=KFP_S3_ENDPOINT)
+    task.set_env_variable(name="AWS_REGION", value=KFP_S3_REGION)
+    task.set_env_variable(name="AWS_DEFAULT_REGION", value=KFP_S3_REGION)
 
     # Keep Git credentials as a Kubernetes Secret for now.
     # This can be changed later without changing train_local.py/eval.py.
@@ -186,20 +208,12 @@ def _workflow(
     mlflow_workspace: str,
     mlflow_experiment: str,
 ):
-    manifests = dsl.importer(
-        artifact_uri=manifest_bundle_uri,
-        artifact_class=Dataset,
-        reimport=False,
-    )
-
-    # Do not set a display name on dsl.importer(): your KFP 2.17 deployment
-    # failed MLMD producer resolution when a display name was added.
     train = train_task(
         code_repo_url=code_repo_url,
         code_commit=code_commit,
         dataset_repo_url=dataset_repo_url,
         dataset_commit=dataset_commit,
-        manifest_bundle=manifests.output,
+        manifest_bundle_uri=manifest_bundle_uri,
         pipeline_kind=pipeline_kind,
         run_name=run_name,
         seed=seed,
@@ -227,7 +241,7 @@ def _workflow(
         dataset_repo_url=dataset_repo_url,
         dataset_commit=train.outputs["dataset_commit_resolved"],
         dataset_name=train.outputs["dataset_name"],
-        manifest_bundle=manifests.output,
+        manifest_bundle_uri=manifest_bundle_uri,
         parent_mlflow_run_id=train.outputs["mlflow_run_id"],
         model_uri=train.outputs["model_uri"],
         pipeline_kind=pipeline_kind,

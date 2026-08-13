@@ -1,51 +1,53 @@
 #!/usr/bin/env python3
-"""Thin Kubeflow adapter.
+"""Thin Kubeflow orchestration adapter.
 
-Kubeflow orchestration concerns live here:
-- materialize the DataLad dataset
-- unpack/rewrite the manifest bundle
-- download an MLflow model when needed
-- invoke the project's existing MLflow-aware train_local.py / eval.py
-- translate their result-contract JSON into KFP OutputPath files
-
-Dependency installation and code checkout are NOT done here; runtime-bootstrap.yaml
-prepares /workspace/code and /workspace/venv before this process starts.
+The cluster admission policy prepares /workspace/code and /workspace/venv.
+This module handles only orchestration-specific preparation and then calls the
+existing MLflow-aware training/evaluation Python functions directly.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from datetime import datetime, timezone
+from urllib.parse import urlparse
+from urllib.request import urlretrieve
 
+import boto3
 import mlflow
 
-import train_local
 import eval as eval_module
+import train_local
 
 
 CODE_DIR = Path("/workspace/code")
 DATA_DIR = Path("/tmp/data")
 MANIFEST_DIR = Path("/tmp/manifests")
+MANIFEST_BUNDLE = Path("/tmp/manifest-bundle.zip")
 TRAIN_SAVE_DIR = Path("/tmp/work/run")
 EVAL_OUT_DIR = Path("/tmp/eval")
 MODEL_DOWNLOAD_DIR = Path("/tmp/load-model")
 
 
 def run(cmd: list[str], *, cwd: Path | None = None) -> None:
+    """Run infrastructure CLIs such as git/DataLad.
+
+    Training and evaluation themselves are called directly as Python functions.
+    """
     print("+", " ".join(map(str, cmd)), flush=True)
     subprocess.run([str(x) for x in cmd], cwd=cwd, check=True)
 
 
 def write_output(path: str, value: object) -> None:
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(str(value), encoding="utf-8")
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(str(value), encoding="utf-8")
 
 
 def git_askpass_env() -> None:
@@ -68,6 +70,39 @@ esac
     os.environ["GIT_TERMINAL_PROMPT"] = "0"
 
 
+def download_manifest_bundle(uri: str) -> Path:
+    """Download the already-created manifest bundle without using dsl.importer."""
+    MANIFEST_BUNDLE.unlink(missing_ok=True)
+
+    if uri.startswith("s3://"):
+        parsed = urlparse(uri)
+        bucket = parsed.netloc
+        key = parsed.path.lstrip("/")
+        if not bucket or not key:
+            raise ValueError(f"Invalid S3 manifest URI: {uri}")
+
+        endpoint = os.environ.get("AWS_ENDPOINT_URL")
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        )
+        print(f"[manifest] Downloading {uri}", flush=True)
+        s3.download_file(bucket, key, str(MANIFEST_BUNDLE))
+        return MANIFEST_BUNDLE
+
+    if uri.startswith(("http://", "https://")):
+        print(f"[manifest] Downloading {uri}", flush=True)
+        urlretrieve(uri, MANIFEST_BUNDLE)
+        return MANIFEST_BUNDLE
+
+    source = Path(uri.removeprefix("file://"))
+    if not source.exists():
+        raise FileNotFoundError(f"Manifest bundle does not exist: {uri}")
+    shutil.copyfile(source, MANIFEST_BUNDLE)
+    return MANIFEST_BUNDLE
+
+
 def clone_dataset(repo: str, commit: str) -> str:
     shutil.rmtree(DATA_DIR, ignore_errors=True)
     run(["datalad", "clone", repo, str(DATA_DIR)])
@@ -78,18 +113,19 @@ def clone_dataset(repo: str, commit: str) -> str:
     resolved = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=DATA_DIR, text=True
     ).strip()
-
     run(["datalad", "get", "-r", "."], cwd=DATA_DIR)
     return resolved
 
 
-def extract_manifests(bundle: str) -> None:
+def extract_manifests(bundle: Path) -> None:
     shutil.rmtree(MANIFEST_DIR, ignore_errors=True)
     MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(bundle, "r") as archive:
         archive.extractall(MANIFEST_DIR)
 
+    # Keep current POC behavior. Relative paths are rooted at /tmp/data.
+    # Absolute paths are intentionally left unchanged.
     for name in ("train_datalad.txt", "val_datalad.txt", "test_datalad.txt"):
         path = MANIFEST_DIR / name
         if not path.exists():
@@ -118,53 +154,63 @@ def download_model(workspace: str, model_uri: str) -> Path:
             dst_path=str(MODEL_DOWNLOAD_DIR),
         )
     )
-
     checkpoints = list(downloaded.rglob("*.pth"))
     if not checkpoints:
         raise RuntimeError(f"No .pth checkpoint found in {downloaded}")
     return checkpoints[0]
 
 
-def code_commit() -> str:
+def resolved_code_commit() -> str:
     return subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=CODE_DIR, text=True
     ).strip()
 
 
 def train(args: argparse.Namespace) -> None:
-    """Prepare Kubeflow inputs, then call train_local.main() directly."""
     git_askpass_env()
 
-    resolved_dataset_commit = clone_dataset(args.dataset_repo_url, args.dataset_commit)
-    extract_manifests(args.manifest_bundle)
+    bundle = download_manifest_bundle(args.manifest_bundle_uri)
+    dataset_commit = clone_dataset(args.dataset_repo_url, args.dataset_commit)
+    extract_manifests(bundle)
 
     train_manifest = MANIFEST_DIR / "train_datalad.txt"
     test_manifest = MANIFEST_DIR / "test_datalad.txt"
     val_manifest = MANIFEST_DIR / "val_datalad.txt"
+
     if not train_manifest.exists() or not test_manifest.exists():
-        raise RuntimeError("Manifest bundle must contain train_datalad.txt and test_datalad.txt")
+        raise RuntimeError(
+            "Manifest bundle must contain train_datalad.txt and test_datalad.txt"
+        )
 
     shutil.rmtree(TRAIN_SAVE_DIR, ignore_errors=True)
     TRAIN_SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
-    resolved_code_commit = code_commit()
+    code_commit = resolved_code_commit()
     dataset_name = DATA_DIR.name
+    from datetime import datetime, timezone
     execution_id = "train-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
-    os.environ["CODE_REPO"] = os.environ["CODE_REPO_URL"]
-    os.environ["CODE_COMMIT"] = resolved_code_commit
+    os.environ["CODE_REPO"] = args.code_repo_url
+    os.environ["CODE_COMMIT"] = code_commit
     os.environ["PIPELINE_KIND"] = args.pipeline_kind
 
-    import base64
     settings = {
-        "run_name": args.run_name, "seed": args.seed, "model": args.model,
-        "image_size": args.image_size, "batch_size": args.batch_size,
-        "workers": args.workers, "optimizer": args.optimizer,
-        "learning_rate": args.learning_rate, "epochs": args.epochs,
-        "factor": args.factor, "patience": args.patience,
+        "run_name": args.run_name,
+        "seed": args.seed,
+        "model": args.model,
+        "image_size": args.image_size,
+        "batch_size": args.batch_size,
+        "workers": args.workers,
+        "optimizer": args.optimizer,
+        "learning_rate": args.learning_rate,
+        "epochs": args.epochs,
+        "factor": args.factor,
+        "patience": args.patience,
         "early_stopping_patience": args.early_stopping_patience,
-        "n_c_samples": args.n_c_samples, "val_n_c_samples": args.val_n_c_samples,
-        "pipeline_kind": args.pipeline_kind, "mlflow_workspace": args.mlflow_workspace,
+        "n_c_samples": args.n_c_samples,
+        "val_n_c_samples": args.val_n_c_samples,
+        "pipeline_kind": args.pipeline_kind,
+        "mlflow_workspace": args.mlflow_workspace,
         "mlflow_experiment": args.mlflow_experiment,
     }
     os.environ["PIPELINE_SETTINGS_B64"] = base64.b64encode(
@@ -197,7 +243,7 @@ def train(args: argparse.Namespace) -> None:
         n_early=args.early_stopping_patience,
         save_dir=str(TRAIN_SAVE_DIR),
         repo=args.dataset_repo_url,
-        commit=resolved_dataset_commit,
+        commit=dataset_commit,
         name=dataset_name,
         dataset_root=str(DATA_DIR),
         workspace=args.mlflow_workspace,
@@ -205,32 +251,35 @@ def train(args: argparse.Namespace) -> None:
         device="cpu",
     )
 
-    # Direct Python call: no subprocess and no second Python interpreter.
-    payload = train_local.main(train_args)
+    # Direct Python call: no subprocess for the training entry point.
+    result = train_local.main(train_args)
 
-    write_output(args.out_mlflow_run_id, payload["mlflow_run_id"])
-    write_output(args.out_model_uri, payload["model_uri"])
-    write_output(args.out_code_commit, resolved_code_commit)
-    write_output(args.out_dataset_commit, resolved_dataset_commit)
+    write_output(args.out_mlflow_run_id, result["mlflow_run_id"])
+    write_output(args.out_model_uri, result["model_uri"])
+    write_output(args.out_code_commit, code_commit)
+    write_output(args.out_dataset_commit, dataset_commit)
     write_output(args.out_dataset_name, dataset_name)
 
 
 def evaluate(args: argparse.Namespace) -> None:
-    """Prepare Kubeflow inputs, then call eval.main() directly."""
     git_askpass_env()
 
-    clone_dataset(args.dataset_repo_url, args.dataset_commit)
-    extract_manifests(args.manifest_bundle)
+    bundle = download_manifest_bundle(args.manifest_bundle_uri)
+    dataset_commit = clone_dataset(args.dataset_repo_url, args.dataset_commit)
+    extract_manifests(bundle)
 
     test_manifest = MANIFEST_DIR / "test_datalad.txt"
     if not test_manifest.exists():
         raise RuntimeError("Manifest bundle must contain test_datalad.txt")
 
     checkpoint = download_model(args.mlflow_workspace, args.model_uri)
+
     shutil.rmtree(EVAL_OUT_DIR, ignore_errors=True)
     EVAL_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    from datetime import datetime, timezone
     execution_id = "eval-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
     os.environ["PARENT_MLFLOW_RUN_ID"] = args.parent_mlflow_run_id
     os.environ["PIPELINE_KIND"] = args.pipeline_kind
 
@@ -244,32 +293,39 @@ def evaluate(args: argparse.Namespace) -> None:
         model=args.model,
         load_path=str(checkpoint),
         repo=args.dataset_repo_url,
-        commit=args.dataset_commit,
+        commit=dataset_commit,
         name=args.dataset_name,
         dataset_root=str(DATA_DIR),
         workspace=args.mlflow_workspace,
         experiment=args.mlflow_experiment,
     )
 
-    # Direct Python call: no subprocess and no second Python interpreter.
-    payload = eval_module.main(eval_args)
+    # Direct Python call: no subprocess for the evaluation entry point.
+    result = eval_module.main(eval_args)
 
-    write_output(args.out_accuracy, float(payload["accuracy"]))
-    write_output(args.out_mlflow_run_id, payload["mlflow_run_id"])
+    write_output(args.out_accuracy, float(result["accuracy"]))
+    write_output(args.out_mlflow_run_id, result["mlflow_run_id"])
+
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="command", required=True)
 
-    t = sub.add_parser("train")
-    t.add_argument("--dataset-repo-url", required=True)
-    t.add_argument("--dataset-commit", default="")
-    t.add_argument("--manifest-bundle", required=True)
-    t.add_argument("--pipeline-kind", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--code-repo-url", required=True)
+    common.add_argument("--code-commit", default="")
+    common.add_argument("--dataset-repo-url", required=True)
+    common.add_argument("--dataset-commit", default="")
+    common.add_argument("--manifest-bundle-uri", required=True)
+    common.add_argument("--pipeline-kind", required=True)
+    common.add_argument("--model", required=True)
+    common.add_argument("--image-size", type=int, required=True)
+    common.add_argument("--mlflow-workspace", required=True)
+    common.add_argument("--mlflow-experiment", required=True)
+
+    t = sub.add_parser("train", parents=[common])
     t.add_argument("--run-name", required=True)
     t.add_argument("--seed", type=int, required=True)
-    t.add_argument("--model", required=True)
-    t.add_argument("--image-size", type=int, required=True)
     t.add_argument("--batch-size", type=int, required=True)
     t.add_argument("--workers", type=int, required=True)
     t.add_argument("--optimizer", required=True)
@@ -281,8 +337,6 @@ def parser() -> argparse.ArgumentParser:
     t.add_argument("--n-c-samples", type=int, required=True)
     t.add_argument("--val-n-c-samples", type=int, required=True)
     t.add_argument("--load-model-uri", default="")
-    t.add_argument("--mlflow-workspace", required=True)
-    t.add_argument("--mlflow-experiment", required=True)
     t.add_argument("--out-mlflow-run-id", required=True)
     t.add_argument("--out-model-uri", required=True)
     t.add_argument("--out-code-commit", required=True)
@@ -290,18 +344,10 @@ def parser() -> argparse.ArgumentParser:
     t.add_argument("--out-dataset-name", required=True)
     t.set_defaults(func=train)
 
-    e = sub.add_parser("evaluate")
-    e.add_argument("--dataset-repo-url", required=True)
-    e.add_argument("--dataset-commit", required=True)
+    e = sub.add_parser("evaluate", parents=[common])
     e.add_argument("--dataset-name", required=True)
-    e.add_argument("--manifest-bundle", required=True)
     e.add_argument("--parent-mlflow-run-id", required=True)
     e.add_argument("--model-uri", required=True)
-    e.add_argument("--pipeline-kind", required=True)
-    e.add_argument("--model", required=True)
-    e.add_argument("--image-size", type=int, required=True)
-    e.add_argument("--mlflow-workspace", required=True)
-    e.add_argument("--mlflow-experiment", required=True)
     e.add_argument("--out-accuracy", required=True)
     e.add_argument("--out-mlflow-run-id", required=True)
     e.set_defaults(func=evaluate)

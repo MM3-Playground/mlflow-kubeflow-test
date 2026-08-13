@@ -20,7 +20,7 @@ from models.Xception import Xception
 from pipeline.helpers import write_portable_manifest
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Single-process local CPU/GPU training")
     parser.add_argument("--id", required=True)
     parser.add_argument("--run_name", default="freq")
@@ -49,7 +49,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--experiment", required=True)
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
-    return parser.parse_args(argv)
+    return parser.parse_args()
 
 
 def build_model(name: str, image_size: int, device: torch.device) -> nn.Module:
