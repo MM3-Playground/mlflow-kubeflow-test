@@ -79,7 +79,7 @@ def train_task(
 ):
     return dsl.ContainerSpec(
         image=RUNTIME_IMAGE,
-        command=["/workspace/venv/bin/python", "-m", "pipeline.kubeflow_task"],
+        command=["/workspace/venv/bin/python", "-u", "-m", "pipeline.kubeflow_task"],
         args=[
             "train",
             "--code-repo-url", code_repo_url,
@@ -112,7 +112,7 @@ def evaluate_task(
 ):
     return dsl.ContainerSpec(
         image=RUNTIME_IMAGE,
-        command=["/workspace/venv/bin/python", "-m", "pipeline.kubeflow_task"],
+        command=["/workspace/venv/bin/python", "-u", "-m", "pipeline.kubeflow_task"],
         args=[
             "evaluate",
             "--code-repo-url", code_repo_url,

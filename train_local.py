@@ -232,6 +232,7 @@ def main(args: argparse.Namespace | None = None) -> dict:
             name="model",
             serialization_format="pickle",
             code_paths=[str(Path.cwd())],
+            pip_requirements=str(Path.cwd() / "requirements.txt")
         )
 
         portable_dir = save_dir / "portable-manifests" / args.id
