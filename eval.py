@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 import torch
+from torch import nn
 
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
@@ -102,6 +103,32 @@ def parse_args():
     return parser.parse_args()
 
 
+def _load_model_weights(path: str, model: nn.Module, device: torch.device) -> None:
+    """Load either a plain state_dict checkpoint or MLflow's serialized PyTorch model.
+
+    The MLflow model artifact is produced by this project's own training run, so
+    the full-model fallback is only used for that trusted artifact.
+    """
+    try:
+        payload = torch.load(path, map_location=device, weights_only=True)
+    except Exception as exc:
+        print(
+            "[eval] weights_only=True could not load the MLflow model package; "
+            "falling back to trusted full-model deserialization",
+            flush=True,
+        )
+        payload = torch.load(path, map_location=device, weights_only=False)
+
+    if isinstance(payload, nn.Module):
+        model.load_state_dict(payload.state_dict())
+    elif isinstance(payload, dict):
+        model.load_state_dict(payload)
+    else:
+        raise TypeError(
+            f"Unsupported checkpoint type from {path}: {type(payload).__name__}"
+        )
+
+
 def main(args: argparse.Namespace | None = None) -> dict:
     if args is None:
         args = parse_args()
@@ -137,8 +164,8 @@ def main(args: argparse.Namespace | None = None) -> dict:
         sys.exit()
 
     if args.load_path is not None and os.path.exists(args.load_path):
-        print('Load pretrained model: {}'.format(args.load_path))
-        model.load_state_dict(torch.load(args.load_path, map_location=device))
+        print('Load pretrained model: {}'.format(args.load_path), flush=True)
+        _load_model_weights(args.load_path, model, device)
     else:
         print("%s not exist" % args.load_path)
         sys.exit()
@@ -153,7 +180,7 @@ def main(args: argparse.Namespace | None = None) -> dict:
         print("Evaluation on subset {}".format(args.subset))
 
     iut_paths_labels = read_paths(args.iut_paths_file, args.undersampling, args.subset)
-    print("Eval set size is {}!".format(len(iut_paths_labels)))
+    print("Eval set size is {}!".format(len(iut_paths_labels)), flush=True)
 
     mlflow.log_artifact(args.iut_paths_file, "datasets")
     if args.dataset_root:
@@ -182,7 +209,7 @@ def main(args: argparse.Namespace | None = None) -> dict:
         "name": args.name,
     })
 
-    print("Predicted maps will be saved in :%s" % args.out_dir)
+    print("Predicted maps will be saved in :%s" % args.out_dir, flush=True)
     os.makedirs(args.out_dir, exist_ok=True)
     if args.subset is None:
         os.makedirs(os.path.join(args.out_dir, 'images'), exist_ok=True)
@@ -192,7 +219,7 @@ def main(args: argparse.Namespace | None = None) -> dict:
         with open(save_path, 'w') as f:
             for (iut_path, label) in iut_paths_labels:
                 f.write(iut_path + '\t' + str(label) + '\n')
-        print('Eval paths file saved to %s' % save_path)
+        print('Eval paths file saved to %s' % save_path, flush=True)
         mlflow.log_artifact(save_path, "datasets")
 
     if args.subset is None:
@@ -238,7 +265,7 @@ def main(args: argparse.Namespace | None = None) -> dict:
             writer.writerow([iut_path, y, lab, y == lab])
 
     accuracy = accuracy_score(y_true, y_pred)
-    print("acc%s: %.4f" % ((' (' + args.subset + ')' if args.subset else ''), accuracy))
+    print("acc%s: %.4f" % ((' (' + args.subset + ')' if args.subset else ''), accuracy), flush=True)
 
     save_path = os.path.join(
         args.out_dir,

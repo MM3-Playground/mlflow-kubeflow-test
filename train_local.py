@@ -91,6 +91,10 @@ def make_loader(args: argparse.Namespace, *, validation: bool) -> DataLoader | N
     )
 
 
+def _load_state_dict(path: str | Path, device: torch.device) -> dict:
+    return torch.load(path, map_location=device, weights_only=True)
+
+
 def main(args: argparse.Namespace | None = None) -> dict:
     if args is None:
         args = parse_args()
@@ -148,7 +152,7 @@ def main(args: argparse.Namespace | None = None) -> dict:
 
         model = build_model(args.model, args.image_size, device)
         if args.load_path:
-            model.load_state_dict(torch.load(args.load_path, map_location=device))
+            model.load_state_dict(_load_state_dict(args.load_path, device))
 
         optimizer_cls = torch.optim.Adam if args.optim == "adam" else torch.optim.AdamW
         optimizer = optimizer_cls(model.parameters(), lr=args.lr)
@@ -220,23 +224,24 @@ def main(args: argparse.Namespace | None = None) -> dict:
                 mlflow.log_artifact(str(best_checkpoint), "best_models")
 
             mlflow.log_metrics(metrics, step=epoch)
-            print(f"Epoch {epoch}: {metrics}")
+            print(f"Epoch {epoch}: {metrics}", flush=True)
             if val_loader is not None and no_improvement > args.n_early:
-                print("Early stopping")
+                print("Early stopping", flush=True)
                 break
 
         selected_checkpoint = best_checkpoint or last_checkpoint
-        model.load_state_dict(torch.load(selected_checkpoint, map_location=device))
+        model.load_state_dict(_load_state_dict(selected_checkpoint, device))
 
         repo_root = Path(__file__).resolve().parent
-
+        print("[train] Logging model to MLflow", flush=True)
         model_info = mlflow.pytorch.log_model(
             model,
             name="model",
             serialization_format="pickle",
             code_paths=[str(repo_root)],
-            pip_requirements=str(repo_root / "requirements.txt")
+            pip_requirements=str(repo_root / "requirements.txt"),
         )
+        print(f"[train] Model logged: {model_info.model_uri}", flush=True)
 
         portable_dir = save_dir / "portable-manifests" / args.id
         portable_train = write_portable_manifest(
