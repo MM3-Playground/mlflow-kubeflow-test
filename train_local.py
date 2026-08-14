@@ -227,12 +227,15 @@ def main(args: argparse.Namespace | None = None) -> dict:
 
         selected_checkpoint = best_checkpoint or last_checkpoint
         model.load_state_dict(torch.load(selected_checkpoint, map_location=device))
+
+        repo_root = Path(__file__).resolve().parent
+
         model_info = mlflow.pytorch.log_model(
             model,
             name="model",
             serialization_format="pickle",
-            code_paths=[str(Path.cwd())],
-            pip_requirements=str(Path.cwd() / "requirements.txt")
+            code_paths=[str(repo_root)],
+            pip_requirements=str(repo_root / "requirements.txt")
         )
 
         portable_dir = save_dir / "portable-manifests" / args.id
